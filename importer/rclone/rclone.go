@@ -35,9 +35,8 @@ type Response struct {
 }
 
 type RcloneImporter struct {
-	Remote   string
+	Typee     string
 	Base     string
-	provider string
 	confFile *os.File
 
 	Ino uint64
@@ -47,22 +46,26 @@ type RcloneImporter struct {
 // to be in the format "remote:path/to/dir". The path is optional, but the remote
 // storage location is required, so the colon separator is always expected.
 func NewRcloneImporter(ctx context.Context, opts *importer.Options, providerName string, config map[string]string) (importer.Importer, error) {
-	remote, base, found := strings.Cut(config["location"], ":")
-	file, err := writeRcloneConfigFile(remote, config)
+	protocole, base, found := strings.Cut(config["location"], ":")
+	if !found {
+		return nil, fmt.Errorf("invalid location: %s. Expected format: remote:path/to/dir", providerName+"://"+config["location"])
+	}
+
+	file, err := writeRcloneConfigFile(protocole, config)
 	if err != nil {
 		return nil, err
 	}
 
+	typee, found := config["type"]
 	if !found {
-		return nil, fmt.Errorf("invalid location: %s. Expected format: remote:path/to/dir", providerName+"://"+config["location"])
+		return nil, fmt.Errorf("missing type in configuration for %s", providerName)
 	}
 
 	librclone.Initialize()
 
 	return &RcloneImporter{
-		Remote:   remote,
+		Typee:	 typee,
 		Base:     base,
-		provider: providerName,
 		confFile: file,
 	}, nil
 }
@@ -169,7 +172,7 @@ func (p *RcloneImporter) scanRecursive(results chan *importer.ScanResult, path s
 
 func (p *RcloneImporter) ListFolder(results chan *importer.ScanResult, path string) (chan *importer.ScanResult, Response, bool) {
 	payload := map[string]interface{}{
-		"fs":     fmt.Sprintf("%s:%s", p.Remote, p.Base),
+		"fs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
 		"remote": path,
 	}
 
@@ -309,7 +312,7 @@ func (p *RcloneImporter) NewReader(pathname string) (io.ReadCloser, error) {
 	}
 
 	payload := map[string]string{
-		"srcFs":     fmt.Sprintf("%s:%s", p.Remote, p.Base),
+		"srcFs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
 		"srcRemote": strings.TrimPrefix(relativePath, "/"),
 
 		"dstFs":     strings.TrimSuffix(name, "/"+stdpath.Base(name)),
@@ -346,11 +349,11 @@ func (p *RcloneImporter) Root() string {
 }
 
 func (p *RcloneImporter) Origin() string {
-	return p.Remote
+	return p.Typee
 }
 
 func (p *RcloneImporter) Type() string {
-	return p.provider
+	return p.Typee
 }
 
 func writeRcloneConfigFile(name string, remoteMap map[string]string) (*os.File, error) {

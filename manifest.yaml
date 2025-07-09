@@ -7,11 +7,11 @@ connectors:
     protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive']
   - type: importer
     executable: googlephotos-importer
-    protocols: ['google photos']
+    protocols: ['googlephotos']
 
   - type: exporter
     executable: rclone-exporter
     protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive']
   - type: exporter
     executable: googlephotos-exporter
-    protocols: ['google photos']
+    protocols: ['googlephotos']
