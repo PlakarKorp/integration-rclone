@@ -15,28 +15,37 @@ import (
 
 	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/librclone/librclone"
+	"github.com/rclone/rclone/fs/config"
 )
 
 type RcloneExporter struct {
-	Remote   string
+	Typee   string
 	Base     string
-	provider string
+	confFile *os.File
 }
 
 func NewRcloneExporter(ctx context.Context, opts *exporter.Options, name string, config map[string]string) (exporter.Exporter, error) {
-	provider, location, _ := strings.Cut(config["location"], "://")
-	remote, base, found := strings.Cut(location, ":")
-
+	protocole, base, found := strings.Cut(config["location"], ":")
 	if !found {
-		return nil, fmt.Errorf("invalid location: %s. Expected format: remote:path/to/dir", location)
+		return nil, fmt.Errorf("invalid location: %s. Expected format: remote:path/to/dir", name+"://"+config["location"])
+	}
+
+	file, err := writeRcloneConfigFile(protocole, config)
+	if err != nil {
+		return nil, err
+	}
+
+	typee, found := config["type"]
+	if !found {
+		return nil, fmt.Errorf("missing type in configuration for %s", name)
 	}
 
 	librclone.Initialize()
 
 	return &RcloneExporter{
-		Remote:   remote,
+		Typee:   typee,
 		Base:     base,
-		provider: provider,
+		confFile: file,
 	}, nil
 }
 
@@ -63,7 +72,7 @@ func (p *RcloneExporter) CreateDirectory(pathname string) error {
 	relativePath := strings.TrimPrefix(pathname, p.GetPathInBackup(""))
 
 	payload := map[string]string{
-		"fs":     fmt.Sprintf("%s:%s", p.Remote, p.Base),
+		"fs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
 		"remote": relativePath,
 	}
 
@@ -103,7 +112,7 @@ func (p *RcloneExporter) StoreFile(pathname string, fp io.Reader, size int64) er
 	payload := map[string]string{
 		"srcFs":     "/",
 		"srcRemote": tmpFile.Name(),
-		"dstFs":     fmt.Sprintf("%s:%s", p.Remote, p.Base),
+		"dstFs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
 		"dstRemote": relativePath,
 	}
 
@@ -126,5 +135,41 @@ func (p *RcloneExporter) SetPermissions(pathname string, fileinfo *objects.FileI
 }
 
 func (p *RcloneExporter) Close() error {
+	if p.confFile != nil {
+		deleteTempConf(p.confFile.Name())
+	}
+	librclone.Finalize()
 	return nil
 }
+
+func writeRcloneConfigFile(name string, remoteMap map[string]string) (*os.File, error) {
+	file, err := createTempConf()
+	_, err = fmt.Fprintf(file, "[%s]\n", name)
+	if err != nil {
+		return nil, err
+	}
+	for k, v := range remoteMap {
+		_, err = fmt.Fprintf(file, "%s = %s\n", k, v)
+	}
+	return file, nil
+}
+
+func createTempConf() (*os.File, error) {
+	tempFile, err := os.CreateTemp("", "rclone-*.conf")
+	if err != nil {
+		return nil, fmt.Errorf("failed to create temporary config file: %w", err)
+	}
+	err = config.SetConfigPath(tempFile.Name())
+	if err != nil {
+		return nil, err
+	}
+	return tempFile, nil
+}
+
+func deleteTempConf(name string) {
+	err := os.Remove(name)
+	if err != nil {
+		fmt.Printf("Error removing temporary file: %v\n", err)
+	}
+}
+
