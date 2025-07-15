@@ -4,14 +4,14 @@ version: 1.0.0
 connectors:
   - type: importer
     executable: rclone-importer
-    protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive']
+    protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive', 'dropbox']
   - type: importer
     executable: googlephotos-importer
     protocols: ['googlephotos']
 
   - type: exporter
     executable: rclone-exporter
-    protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive']
+    protocols: ['onedrive', 'opendrive', 'drive', 'iclouddrive', 'dropbox']
   - type: exporter
     executable: googlephotos-exporter
     protocols: ['googlephotos']
