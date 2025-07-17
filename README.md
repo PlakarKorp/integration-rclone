@@ -11,7 +11,7 @@
 * [**Plakar**](https://github.com/PlakarKorp/plakar) installed with plugin support
 * [**Rclone**](https://rclone.org/install/) installed on your system
 * A configured **Rclone remote** for your cloud provider (e.g., Google Drive, OneDrive, iCloud Drive)
-* Supported providers currently include: `google drive`, `google photos`, `onedrive`, `opendrive`, `iclouddrive` (excl. iCloud Photos)
+* Supported providers currently include: `google drive`, `google photos`, `onedrive`, `opendrive`, `iclouddrive` (excl. iCloud Photos), `dropbox`, and `protondrive`.
 
 ---
 
@@ -70,10 +70,11 @@ Supported `location` values:
 
 * `onedrive://`
 * `opendrive://`
-* `drive://` (Google Drive)
+* `googledrive://`
 * `iclouddrive://`
-* `googlephotos://` (Google Photos)
-* `dropbox://` (Dropbox)
+* `googlephotos://`
+* `dropbox://`
+* `protondrive://`
 
 *Note:* iCloud Drive support excludes iCloud Photos at this time.
 
