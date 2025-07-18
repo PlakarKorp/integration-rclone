@@ -3,11 +3,14 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	stdpath "path"
 	"strings"
 
 	"github.com/PlakarKorp/integration-rclone/utils"
@@ -67,35 +70,94 @@ func (r *RcloneStorage) mkdir(pathname string) error {
 	return nil
 }
 
-func (r *RcloneStorage) newFile(rd io.Reader) error {
+func (r *RcloneStorage) putFile(name string, rd io.Reader) (int64, error) {
 	tmpFile, err := os.CreateTemp("", "tempfile-*.tmp")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer tmpFile.Close()
 	defer os.Remove(tmpFile.Name())
 
 	_, err = io.Copy(tmpFile, rd)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	payload := map[string]string{
 		"srcFs":     "/",
 		"srcRemote": tmpFile.Name(),
 		"dstFs":     fmt.Sprintf("%s:%s", r.Typee, r.Base),
-		"dstRemote": "", //TODO define the destination remote path
+		"dstRemote": name,
 	}
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	body, resp := librclone.RPC("operations/copyfile", string(jsonPayload))
 
 	if resp != http.StatusOK {
-		return fmt.Errorf("failed to copy file: %s", body)
+		return 0, fmt.Errorf("failed to put file: %s", body)
+	}
+
+	finfo, err := tmpFile.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("failed to stat temporary file: %w", err)
+	}
+
+	return finfo.Size(), nil
+}
+
+func (r *RcloneStorage) getFile(pathname string) (io.ReadSeekCloser, error) {
+	name, err := utils.CreateTempPath("plakar_temp_*")
+	if err != nil {
+		return nil, err
+	}
+
+	payload := map[string]string{
+		"srcFs":     fmt.Sprintf("%s:%s", r.Typee, ""),
+		"srcRemote": pathname,
+
+		"dstFs":     strings.TrimSuffix(name, "/"+stdpath.Base(name)),
+		"dstRemote": stdpath.Base(name),
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	log.Printf("Copying payload: %s", string(jsonPayload))
+
+	body, status := librclone.RPC("operations/copyfile", string(jsonPayload))
+
+	if status != http.StatusOK {
+		return nil, fmt.Errorf("failed to get file: %s", body)
+	}
+
+	tmpFile, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &utils.AutoremoveTmpFile{tmpFile}, nil
+}
+
+func (r *RcloneStorage) deleteFile(pathname string) error {
+	payload := map[string]string{
+		"fs":     fmt.Sprintf("%s:%s", r.Typee, r.Base),
+		"remote": pathname,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	body, resp := librclone.RPC("operations/deletefile", string(jsonPayload))
+	if resp != http.StatusOK {
+		return fmt.Errorf("failed to delete file: %s", body)
 	}
 
 	return nil
@@ -103,7 +165,9 @@ func (r *RcloneStorage) newFile(rd io.Reader) error {
 
 func (r *RcloneStorage) Create(ctx context.Context, config []byte) error {
 
-	err := r.newFile(bytes.NewReader(config))
+	r.getFile("plakar.go")
+
+	_, err := r.putFile("CONFIG", bytes.NewReader(config))
 	if err != nil {
 		return fmt.Errorf("failed to create config file: %w", err)
 	}
@@ -125,8 +189,18 @@ func (r *RcloneStorage) Create(ctx context.Context, config []byte) error {
 }
 
 func (r *RcloneStorage) Open(ctx context.Context) ([]byte, error) {
-	//TODO implement me
-	panic("implement me")
+	rd, err := r.getFile("CONFIG")
+	if err != nil {
+		return nil, fmt.Errorf("failed to open config file: %w", err)
+	}
+	defer rd.(io.Closer).Close()
+
+	configData, err := io.ReadAll(rd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	return configData, nil
 }
 
 func (r *RcloneStorage) Location() string {
@@ -134,8 +208,7 @@ func (r *RcloneStorage) Location() string {
 }
 
 func (r *RcloneStorage) Mode() storage.Mode {
-	//TODO implement me
-	panic("implement me")
+	return storage.ModeRead | storage.ModeWrite
 }
 
 func (r *RcloneStorage) Size() int64 {
@@ -143,72 +216,120 @@ func (r *RcloneStorage) Size() int64 {
 	panic("implement me")
 }
 
+type Response struct {
+	List []struct {
+		Path     string `json:"Path"`
+		Name     string `json:"Name"`
+		Size     int64  `json:"Size"`
+		MimeType string `json:"MimeType"`
+		ModTime  string `json:"ModTime"`
+		IsDir    bool   `json:"isDir"`
+		ID       string `json:"ID"`
+	} `json:"list"`
+}
+
+func (r *RcloneStorage) getMacs(name string) ([]objects.MAC, error) {
+	payload := map[string]string{
+		"fs":     fmt.Sprintf("%s:%s", r.Typee, r.Base),
+		"remote": name,
+	}
+
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	body, resp := librclone.RPC("operations/list", string(jsonPayload))
+	if resp != http.StatusOK {
+		return nil, fmt.Errorf("failed to list states: %s", body)
+	}
+
+	var response Response
+	err = json.Unmarshal([]byte(body), &response)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	var macs []objects.MAC
+	for _, file := range response.List {
+		if file.IsDir {
+			continue // Skip directories
+		}
+
+		mac, err := hex.DecodeString(file.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create MAC from ID %s: %w", file.ID, err)
+		}
+
+		macs = append(macs, objects.MAC(mac))
+	}
+
+	return macs, nil
+}
+
 func (r *RcloneStorage) GetStates() ([]objects.MAC, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getMacs("states")
 }
 
 func (r *RcloneStorage) PutState(mac objects.MAC, rd io.Reader) (int64, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.putFile(fmt.Sprintf("states/%064x", mac), rd)
 }
 
 func (r *RcloneStorage) GetState(mac objects.MAC) (io.Reader, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getFile(fmt.Sprintf("states/%064x", mac))
 }
 
 func (r *RcloneStorage) DeleteState(mac objects.MAC) error {
-	//TODO implement me
-	panic("implement me")
+	return r.deleteFile(fmt.Sprintf("states/%064x", mac))
 }
 
 func (r *RcloneStorage) GetPackfiles() ([]objects.MAC, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getMacs("packfiles")
 }
 
 func (r *RcloneStorage) PutPackfile(mac objects.MAC, rd io.Reader) (int64, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.putFile(fmt.Sprintf("packfiles/%064x", mac), rd)
 }
 
 func (r *RcloneStorage) GetPackfile(mac objects.MAC) (io.Reader, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getFile(fmt.Sprintf("packfiles/%064x", mac))
 }
 
 func (r *RcloneStorage) GetPackfileBlob(mac objects.MAC, offset uint64, length uint32) (io.Reader, error) {
-	//TODO implement me
-	panic("implement me")
+	rd, err := r.getFile(fmt.Sprintf("packfiles/%064x", mac))
+	if err != nil {
+		return nil, err
+	}
+
+	_, err = rd.Seek(int64(offset), io.SeekStart)
+	if err != nil {
+		return nil, err
+	}
+	return io.LimitReader(rd, int64(length)), nil
 }
 
 func (r *RcloneStorage) DeletePackfile(mac objects.MAC) error {
-	//TODO implement me
-	panic("implement me")
+	return r.deleteFile(fmt.Sprintf("packfiles/%064x", mac))
 }
 
 func (r *RcloneStorage) GetLocks() ([]objects.MAC, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getMacs("locks")
 }
 
 func (r *RcloneStorage) PutLock(lockID objects.MAC, rd io.Reader) (int64, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.putFile(fmt.Sprintf("lock/%064x", lockID), rd)
 }
 
 func (r *RcloneStorage) GetLock(lockID objects.MAC) (io.Reader, error) {
-	//TODO implement me
-	panic("implement me")
+	return r.getFile(fmt.Sprintf("locks/%064x", lockID))
 }
 
 func (r *RcloneStorage) DeleteLock(lockID objects.MAC) error {
-	//TODO implement me
-	panic("implement me")
+	return r.deleteFile(fmt.Sprintf("locks/%064x", lockID))
 }
 
 func (r *RcloneStorage) Close() error {
-	//TODO implement me
-	panic("implement me")
+	utils.DeleteTempConf(r.confFile.Name())
+	librclone.Finalize()
+	return nil
 }
