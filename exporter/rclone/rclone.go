@@ -1,21 +1,21 @@
 package rclone
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"context"
 	"io"
 	"net/http"
 	"os"
 	stdpath "path"
 	"strings"
 
+	"github.com/PlakarKorp/integration-rclone/utils"
 	"github.com/PlakarKorp/kloset/objects"
 	"github.com/PlakarKorp/kloset/snapshot/exporter"
 
 	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/librclone/librclone"
-	"github.com/rclone/rclone/fs/config"
 )
 
 type RcloneExporter struct {
@@ -35,7 +35,7 @@ func NewRcloneExporter(ctx context.Context, opts *exporter.Options, name string,
 		return nil, fmt.Errorf("missing type in configuration")
 	}
 
-	file, err := writeRcloneConfigFile(typee, config)
+	file, err := utils.WriteRcloneConfigFile(typee, config)
 	if err != nil {
 		return nil, err
 	}
@@ -136,40 +136,8 @@ func (p *RcloneExporter) SetPermissions(pathname string, fileinfo *objects.FileI
 
 func (p *RcloneExporter) Close() error {
 	if p.confFile != nil {
-		deleteTempConf(p.confFile.Name())
+		utils.DeleteTempConf(p.confFile.Name())
 	}
 	librclone.Finalize()
 	return nil
 }
-
-func writeRcloneConfigFile(name string, remoteMap map[string]string) (*os.File, error) {
-	file, err := createTempConf()
-	_, err = fmt.Fprintf(file, "[%s]\n", name)
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range remoteMap {
-		_, err = fmt.Fprintf(file, "%s = %s\n", k, v)
-	}
-	return file, nil
-}
-
-func createTempConf() (*os.File, error) {
-	tempFile, err := os.CreateTemp("", "rclone-*.conf")
-	if err != nil {
-		return nil, fmt.Errorf("failed to create temporary config file: %w", err)
-	}
-	err = config.SetConfigPath(tempFile.Name())
-	if err != nil {
-		return nil, err
-	}
-	return tempFile, nil
-}
-
-func deleteTempConf(name string) {
-	err := os.Remove(name)
-	if err != nil {
-		fmt.Printf("Error removing temporary file: %v\n", err)
-	}
-}
-
