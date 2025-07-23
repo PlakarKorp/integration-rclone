@@ -28,11 +28,6 @@ type RcloneStorage struct {
 }
 
 func NewRcloneStorage(ctx context.Context, name string, config map[string]string) (storage.Store, error) {
-	_, base, found := strings.Cut(config["location"], "://")
-	if !found {
-		return nil, fmt.Errorf("invalid location: %s. Expected format: remote:path/to/dir", name+"://"+config["location"])
-	}
-
 	typee, found := config["type"]
 	if !found {
 		return nil, fmt.Errorf("missing type in configuration for %s", name)
@@ -45,9 +40,9 @@ func NewRcloneStorage(ctx context.Context, name string, config map[string]string
 
 	librclone.Initialize()
 
-	location := config["location"]
+	base := ""
 	if value, ok := config["root_folder_id"]; ok {
-		location = location + value
+		base = value
 	}
 
 	return &RcloneStorage{
@@ -55,7 +50,7 @@ func NewRcloneStorage(ctx context.Context, name string, config map[string]string
 		Base:     base,
 		confFile: file,
 
-		location: location,
+		location: config["location"],
 	}, nil
 }
 
