@@ -1,4 +1,4 @@
-package rclone
+package importer
 
 import (
 	"context"
@@ -22,6 +22,19 @@ import (
 	_ "github.com/rclone/rclone/backend/all" // import all backends
 	"github.com/rclone/rclone/librclone/librclone"
 )
+
+func ggdPhotoSpeCase(filename string) error {
+	if strings.HasPrefix(filename, "media/") {
+		if strings.HasPrefix(filename, "media/all") {
+			return nil
+		}
+		return fmt.Errorf("skipping %s", filename)
+	}
+	if filename == "upload" {
+		return fmt.Errorf("skipping %s", filename)
+	}
+	return nil
+}
 
 type Response struct {
 	List []struct {
@@ -203,6 +216,12 @@ func (p *RcloneImporter) scanFolder(results chan *importer.ScanResult, path stri
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+
+			if p.Typee == "googlephotos" {
+				if ggdPhotoSpeCase(file.Path) != nil {
+					return
+				}
+			}
 
 			// Should never happen, but just in case let's fallback to the Unix epoch
 			parsedTime, err := time.Parse(time.RFC3339, file.ModTime)

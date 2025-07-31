@@ -1,17 +1,11 @@
-all: importer exporter storage
+GO = go
 
-importer:
-	go build -o rclone-importer -v importer/rclone/main/main.go
-	go build -o googlephotos-importer -v importer/googlephotos/main/main.go
+all: build
 
-exporter:
-	go build -o rclone-exporter -v exporter/rclone/main/main.go
-	go build -o googlephotos-exporter -v exporter/googlephoto/main/main.go
-
-storage:
-	go build -o rclone-storage -v storage/main/main.go
+build:
+	${GO} build -v -o rclone-importer ./plugin/importer
+	${GO} build -v -o rclone-exporter ./plugin/exporter
+	${GO} build -v -o rclone-storage ./plugin/storage
 
 clean:
-	@rm -f rclone-importer googlephotos-importer rclone-exporter googlephotos-exporter
-
-.PHONY: all importer exporter storage clean
+	rm -f rclone-importer rclone-exporter rclone-storage rclone-*.ptar

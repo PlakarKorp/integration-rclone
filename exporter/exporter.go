@@ -1,4 +1,4 @@
-package rclone
+package exporter
 
 import (
 	"context"
@@ -69,6 +69,10 @@ func (p *RcloneExporter) Root(ctx context.Context) (string, error) {
 }
 
 func (p *RcloneExporter) CreateDirectory(ctx context.Context, pathname string) error {
+	if p.Typee == "googlephotos" {
+		return nil
+	}
+
 	relativePath := strings.TrimPrefix(pathname, p.GetPathInBackup(""))
 
 	payload := map[string]string{
@@ -109,11 +113,28 @@ func (p *RcloneExporter) StoreFile(ctx context.Context, pathname string, fp io.R
 
 	relativePath := strings.TrimPrefix(pathname, p.GetPathInBackup(""))
 
+	var dstFs string = fmt.Sprintf("%s:%s", p.Typee, p.Base)
+	var dstRemoteFunc func() string = func() string {
+		return relativePath
+	}
+	if p.Typee == "googlephotos" {
+		dstFs = p.Typee + ":"
+		dstRemoteFunc = func() string {
+			if strings.HasPrefix(relativePath, "media/") {
+				return "upload/" + stdpath.Base(relativePath)
+			}
+			if strings.HasPrefix(relativePath, "feature/") {
+				return "album/FAVORITE/" + stdpath.Base(relativePath)
+			}
+			return relativePath
+		}
+	}
+
 	payload := map[string]string{
 		"srcFs":     "/",
 		"srcRemote": tmpFile.Name(),
-		"dstFs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
-		"dstRemote": relativePath,
+		"dstFs":     dstFs,
+		"dstRemote": dstRemoteFunc(),
 	}
 
 	jsonPayload, err := json.Marshal(payload)
