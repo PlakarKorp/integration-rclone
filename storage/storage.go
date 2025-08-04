@@ -164,7 +164,7 @@ func (r *RcloneStorage) deleteFile(pathname string) error {
 	return nil
 }
 
-func (r *RcloneStorage) ListFolder(pathname string) ([]string, error) {
+func (r *RcloneStorage) listFolder(pathname string) ([]string, error) {
 	payload := map[string]interface{}{
 		"fs":     fmt.Sprintf("%s:%s", r.Typee, r.Base),
 		"remote": pathname,
@@ -194,7 +194,10 @@ func (r *RcloneStorage) ListFolder(pathname string) ([]string, error) {
 }
 
 func (r *RcloneStorage) Create(ctx context.Context, config []byte) error {
-	entries, err := r.ListFolder("")
+	if r.mkdir("") != nil {
+		return fmt.Errorf("failed to create root directory")
+	}
+	entries, err := r.listFolder("")
 	if err != nil {
 		return fmt.Errorf("failed to list root folder: %w", err)
 	}
@@ -265,7 +268,7 @@ type Response struct {
 }
 
 func (r *RcloneStorage) getMacs(name string) ([]objects.MAC, error) {
-	entries, err := r.ListFolder(name)
+	entries, err := r.listFolder(name)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list folder %s: %w", name, err)
 	}
