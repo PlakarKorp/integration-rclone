@@ -1,139 +1,121 @@
-# 📦 integration-rclone
+# Rclone Integration
 
-`integration-rclone` is a Plakar plugin that allows you to back up and restore your cloud data from various cloud providers supported by Rclone (like Google Drive, Google Photos, OneDrive, iCloud Drive, and more) directly into a Plakar repository.
+## What is Rclone?
 
-> 🔐 All data is handled via Rclone and saved/restored seamlessly with Plakar’s Kloset immutable data store.
+**Rclone** is a command-line program to manage files on cloud storage. It supports a wide range of cloud providers (Google Drive, OneDrive, Dropbox, iCloud Drive, and more) and allows seamless transfer, backup, and synchronization of files.
 
----
+This integration allows:
 
-## ⚙️ Requirements
+- Seamless backup of files from Rclone-supported cloud providers into a Kloset repository
+- Direct restoration of snapshots to remote cloud destinations via Rclone
+- Compatibility with a wide range of cloud storage services and legacy tools
 
-* [**Plakar**](https://github.com/PlakarKorp/plakar) installed with plugin support
-* [**Rclone**](https://rclone.org/install/) installed on your system
-* A configured **Rclone remote** for your cloud provider (e.g., Google Drive, OneDrive, iCloud Drive)
-* Supported providers currently include: `google drive`, `google photos`, `onedrive`, `opendrive`, `iclouddrive` (excl. iCloud Photos), `dropbox`, and `protondrive`.
+## Installation
 
----
+If a pre-built package exists for your system and architecture, you can simply install it using:
 
-## 📦 Installation
-
-Clone the plugin repository and build the plugin:
-
-```bash
-git clone git@github.com:PlakarKorp/integration-rclone.git
-cd integration-rclone
-make
+```sh
+$ plakar pkg add rclone
 ```
 
-Then, build the plugin package with Plakar:
+Otherwise, you can first build it:
 
-```bash
-plakar pkg build integration-rclone/manifest.yaml
+```sh
+$ plakar pkg build rclone
 ```
 
-Install the generated plugin package (`rclone-vx.x.x.ptar`):
+This should produce `rclone-vX.Y.Z.ptar` that can be installed with:
 
 ```bash
-plakar pkg install rclone-vx.x.x.ptar
+$ plakar pkg add ./rclone-v0.1.0.ptar
 ```
 
-You’re now ready to configure and use the Rclone integration.
-
----
-
-## 🔧 Configuration
+## Configuration
 
 You must have a valid Rclone remote configured (`rclone config`) for your cloud provider. The remote config lives in `~/.config/rclone/rclone.conf`.
 
-Example snippet for `rclone.conf`:
-
-```ini
-[myremote]
-type = onedrive
-token = {"..."}
-drive_id = ...
-drive_type = business
-```
-
-Translate this config to YAML in your Plakar configuration, adding the `location` field matching your provider:
-
-```yaml
-myremote:
-  type: onedrive
-  token: '{"..."}'
-  drive_id: ...
-  drive_type: business
-  location: 'onedrive://'
-```
-
-Supported `location` values:
-
-* `onedrive://`
-* `opendrive://`
-* `googledrive://`
-* `iclouddrive://`
-* `googlephotos://`
-* `dropbox://`
-* `protondrive://`
-* `koofr://`
-
-*Note:* iCloud Drive support excludes iCloud Photos at this time.
-
----
-
-## 🚀 Usage
-
-Create a Plakar repository to back up your data:
+To include Rclone in your Plakar workflow, you can add a source, destination and store using the following commands:
 
 ```bash
-plakar at @myremote create
+# for sources
+$ rclone config show | plakar source import configname
+
+# for destinations
+$ rclone config show | plakar destination import configname
+
+# for stores
+$ rclone config show | plakar store import configname
 ```
 
-Or back up your cloud data into a Kloset repository at `/path/to/backup`:
+> *Note:* The `configname` is the name of the Rclone remote you configured in `rclone config`.
+
+## Supported Providers
+
+Plakar supports the following Rclone providers for backup and restore operations:
+
+- **Google Drive**
+- **Google Photo**
+- **OneDrive**
+- **Dropbox**
+- **OpenDrive**
+- **Proton Drive**
+- **Koofr**
+- **iCloud Drive**
+
+> *Note:* iCloud Drive support excludes iCloud Photos at this time.
+
+## Example Usage
+
+The following commands illustrate how to use the integration Rclone with Plakar for backup, restore and store:
+
+The terme `myCloudProv` are placeholders for your configured Rclone config.
+
+### For Sources
 
 ```bash
-plakar at /path/to/backup create
-plakar at /path/to/backup backup @myremote
+# Import an Rclone source
+$ rclone config show | plakar source import myCloudProv
+
+# Create a Kloset repository at a specific path
+$ plakar path/to/kloset create
+
+# Backup the source
+$ plakar at path/to/kloset @myCloudProv
 ```
 
-Restore data from the Kloset repository back to your cloud provider:
+### For Destinations
 
 ```bash
-plakar at /path/to/backup restore -to @myremote <snapshot_id> [path/to/file]
+# Import an Rclone destination
+$ rclone config show | plakar destination import myCloudProv  
+
+# List available snapshots to see their IDs
+$ plakar at path/to/kloset ls
+
+# Restore a snapshot to the destination
+$ plakar at path/to/kloset restore -to @myCloudProv <snapshot_id>
 ```
 
-You can combine all these commands with multiple cloud providers. For example, to back up from iCloud Drive to Google Drive, with OneDrive as the kloset repository:
+### For Stores
 
 ```bash
-plakar at @onedrive create
-plakar at @onedrive backup @iclouddrive
-plakar at @onedrive restore -to @googledrive <snapshot_id>
+# Import an Rclone store
+$ rclone config show | plakar store import myCloudProv
+
+# Create a Kloset repository at our store
+$ plakar @myCloudProv create
 ```
----
+>*Note:* This kloset repository can be used to store files, snapshots, and other data directly in the cloud provider, like a classic kloset.
 
-## 📂 Backup Format
+## Tips
 
-Data backed up with Rclone integration includes:
+- Ensure your Rclone remote is correctly configured and authenticated before use.
+- Keep your tokens and credentials secure.
+- Plakar currently supports a subset of Rclone’s providers. More will be added upon demand.
 
-* Files and folders as managed by the cloud provider
-* Metadata required for restoration
-* Support for partial or full restores
-
-*Note:* Media-specific APIs (like iCloud Photos) are not fully supported yet.
-
----
-
-## 🛠️ Tips
-
-* Ensure your Rclone remote is correctly configured and authenticated before use.
-* Keep your tokens and credentials secure.
-* Currently, Plakar supports only a subset of Rclone’s providers. More will be added upon demand.
-
----
-
-## 📬 Feedback
+## Feedback
 
 Encounter an issue or want a new provider supported? Please:
 
-* [Open an issue on GitHub](https://github.com/PlakarKorp/plakar/issues/new?title=Rclone%20integration%20issue)
-* Join our [Discord community](https://discord.gg/uuegtnF2Q5) to discuss and get real-time help.
+- [Open an issue on GitHub](https://github.com/PlakarKorp/plakar/issues/new?title=Rclone%20integration%20issue)
+- Join our [Discord community](https://discord.gg/uuegtnF2Q5) to discuss and get real-time help.
