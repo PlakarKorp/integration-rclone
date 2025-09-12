@@ -3,8 +3,8 @@ module github.com/PlakarKorp/integration-rclone
 go 1.24.0
 
 require (
-	github.com/PlakarKorp/go-kloset-sdk v1.0.1
-	github.com/PlakarKorp/kloset v1.0.5
+	github.com/PlakarKorp/go-kloset-sdk v1.0.2
+	github.com/PlakarKorp/kloset v1.0.7
 	github.com/rclone/rclone v1.70.2
 )
 
@@ -24,7 +24,7 @@ require (
 	github.com/IBM/go-sdk-core/v5 v5.20.0 // indirect
 	github.com/Max-Sum/base32768 v0.0.0-20230304063302-18e6ce5945fd // indirect
 	github.com/Microsoft/go-winio v0.6.2 // indirect
-	github.com/PlakarKorp/integration-grpc v1.0.14 // indirect
+	github.com/PlakarKorp/integration-grpc v1.0.15 // indirect
 	github.com/ProtonMail/bcrypt v0.0.0-20211005172633-e235017c1baf // indirect
 	github.com/ProtonMail/gluon v0.17.1-0.20230724134000-308be39be96e // indirect
 	github.com/ProtonMail/go-crypto v1.3.0 // indirect
