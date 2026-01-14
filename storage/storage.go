@@ -277,12 +277,30 @@ func (r *RcloneStorage) getMacs(name string) ([]objects.MAC, error) {
 
 	var macs []objects.MAC
 	for _, file := range entries {
-		mac, err := hex.DecodeString(path.Base(file))
-		if err != nil {
-			return nil, fmt.Errorf("failed to create MAC from ID %s: %w", file, err)
+		/*
+		 * old version of integration-rclone would put all the
+		 * stuff under a single directory, i.e. not
+		 * bucket-style.  attempt to support it read-only.
+		 */
+		if mac, err := hex.DecodeString(path.Base(file)); err != nil {
+			if len(mac) == len(objects.NilMac) {
+				macs = append(macs, objects.MAC(mac))
+				continue
+			}
 		}
 
-		macs = append(macs, objects.MAC(mac))
+		name := path.Join(name, path.Base(file))
+		entries, err := r.listFolder(name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list directory %s: %w", name, err)
+		}
+		for _, file := range entries {
+			mac, err := hex.DecodeString(path.Base(file))
+			if err != nil {
+				return nil, fmt.Errorf("failed to create MAC from ID %s: %w", file, err)
+			}
+			macs = append(macs, objects.MAC(mac))
+		}
 	}
 
 	return macs, nil
@@ -293,15 +311,15 @@ func (r *RcloneStorage) GetStates(ctx context.Context) ([]objects.MAC, error) {
 }
 
 func (r *RcloneStorage) PutState(ctx context.Context, mac objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("states/%064x", mac), rd)
+	return r.putFile(fmt.Sprintf("states/%02x/%064x", mac[0], mac), rd)
 }
 
 func (r *RcloneStorage) GetState(ctx context.Context, mac objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("states/%064x", mac))
+	return r.getFile(fmt.Sprintf("states/%02x/%064x", mac[0], mac))
 }
 
 func (r *RcloneStorage) DeleteState(ctx context.Context, mac objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("states/%064x", mac))
+	return r.deleteFile(fmt.Sprintf("states/%02x/%064x", mac[0], mac))
 }
 
 func (r *RcloneStorage) GetPackfiles(ctx context.Context) ([]objects.MAC, error) {
@@ -309,11 +327,11 @@ func (r *RcloneStorage) GetPackfiles(ctx context.Context) ([]objects.MAC, error)
 }
 
 func (r *RcloneStorage) PutPackfile(ctx context.Context, mac objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("packfiles/%064x", mac), rd)
+	return r.putFile(fmt.Sprintf("packfiles/%02x/%064x", mac[0], mac), rd)
 }
 
 func (r *RcloneStorage) GetPackfile(ctx context.Context, mac objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("packfiles/%064x", mac))
+	return r.getFile(fmt.Sprintf("packfiles/%02x/%064x", mac[0], mac))
 }
 
 func limitReadCloser(r io.ReadCloser, n int64) io.ReadCloser {
@@ -326,7 +344,7 @@ type limitedReadCloser struct {
 }
 
 func (r *RcloneStorage) GetPackfileBlob(ctx context.Context, mac objects.MAC, offset uint64, length uint32) (io.ReadCloser, error) {
-	rd, err := r.getFile(fmt.Sprintf("packfiles/%064x", mac))
+	rd, err := r.getFile(fmt.Sprintf("packfiles/%02x/%064x", mac[0], mac))
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +358,7 @@ func (r *RcloneStorage) GetPackfileBlob(ctx context.Context, mac objects.MAC, of
 }
 
 func (r *RcloneStorage) DeletePackfile(ctx context.Context, mac objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("packfiles/%064x", mac))
+	return r.deleteFile(fmt.Sprintf("packfiles/%02x/%064x", mac[0], mac))
 }
 
 func (r *RcloneStorage) GetLocks(ctx context.Context) ([]objects.MAC, error) {
@@ -348,15 +366,15 @@ func (r *RcloneStorage) GetLocks(ctx context.Context) ([]objects.MAC, error) {
 }
 
 func (r *RcloneStorage) PutLock(ctx context.Context, lockID objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("locks/%064x", lockID), rd)
+	return r.putFile(fmt.Sprintf("locks/%02x/%064x", lockID[0], lockID), rd)
 }
 
 func (r *RcloneStorage) GetLock(ctx context.Context, lockID objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("locks/%064x", lockID))
+	return r.getFile(fmt.Sprintf("locks/%02x/%064x", lockID[0], lockID))
 }
 
 func (r *RcloneStorage) DeleteLock(ctx context.Context, lockID objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("locks/%064x", lockID))
+	return r.deleteFile(fmt.Sprintf("locks/%02x/%064x", lockID[0], lockID))
 }
 
 func (r *RcloneStorage) Close(ctx context.Context) error {
