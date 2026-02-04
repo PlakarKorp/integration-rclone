@@ -15,8 +15,10 @@ import (
 
 	"github.com/PlakarKorp/integration-rclone/utils"
 
+	"github.com/PlakarKorp/kloset/connectors"
+	"github.com/PlakarKorp/kloset/connectors/importer"
+	"github.com/PlakarKorp/kloset/location"
 	"github.com/PlakarKorp/kloset/objects"
-	"github.com/PlakarKorp/kloset/snapshot/importer"
 
 	_ "github.com/rclone/rclone/backend/all" // import all backends
 	"github.com/rclone/rclone/librclone/librclone"
@@ -51,14 +53,13 @@ type RcloneImporter struct {
 	Typee    string
 	Base     string
 	confFile *os.File
-
-	Ino uint64
+	logFile  *os.File
 }
 
 // NewRcloneImporter creates a new RcloneImporter instance. It expects the location
 // to be in the format "remote:path/to/dir". The path is optional, but the remote
 // storage location is required, so the colon separator is always expected.
-func NewRcloneImporter(ctx context.Context, opts *importer.Options, providerName string, config map[string]string) (importer.Importer, error) {
+func NewRcloneImporter(ctx context.Context, opts *connectors.Options, providerName string, config map[string]string) (importer.Importer, error) {
 	_, base, found := strings.Cut(config["location"], ":")
 	if !found {
 		return nil, fmt.Errorf("invalid location: %s. Expected format: location: <provider>://", config["location"])
@@ -78,25 +79,40 @@ func NewRcloneImporter(ctx context.Context, opts *importer.Options, providerName
 
 	librclone.Initialize()
 
+	f, _ := os.Create("/home/ptr/dev/plakar/plakar/log2.txt")
+
 	return &RcloneImporter{
 		Typee:    typee,
 		Base:     base,
 		confFile: file,
+		logFile:  f,
 	}, nil
 }
 
-func (p *RcloneImporter) Scan(ctx context.Context) (<-chan *importer.ScanResult, error) {
-	results := make(chan *importer.ScanResult, 1000)
-	var wg sync.WaitGroup
+func (p *RcloneImporter) Root() string          { return p.GetPathInBackup("") }
+func (p *RcloneImporter) Origin() string        { return p.Typee } // WRONG
+func (p *RcloneImporter) Type() string          { return p.Typee }
+func (p *RcloneImporter) Flags() location.Flags { return 0 }
 
-	go func() {
-		p.GenerateBaseDirectories(results)
-		p.scanRecursive(results, "", &wg)
-		wg.Wait()
-		close(results)
-	}()
+func (p *RcloneImporter) Ping(ctx context.Context) error {
+	return nil
+}
 
-	return results, nil
+func (p *RcloneImporter) Import(ctx context.Context, records chan<- *connectors.Record, results <-chan *connectors.Result) error {
+	defer close(records)
+
+	// Inline scanRecursive here so that we get a chance to catch an early
+	// error and abort the import.
+	response, err := p.ListFolder(records, "")
+	if err != nil {
+		return err
+	}
+
+	wg := &sync.WaitGroup{}
+	p.scanFolder(records, "", response, wg)
+
+	wg.Wait()
+	return nil
 }
 
 // GetPathInBackup returns the full normalized path of a file within the backup.
@@ -112,37 +128,6 @@ func (p *RcloneImporter) GetPathInBackup(path string) string {
 	}
 
 	return stdpath.Clean(path)
-}
-
-// GenerateBaseDirectories sends all parent directories of the base path in
-// reverse order to the provided results channel.
-//
-// For example, if the base is "remote:/path/to/dir", this function generates
-// the directories "/path/to/dir", "/path/to", "/path", and "/".
-func (p *RcloneImporter) GenerateBaseDirectories(results chan *importer.ScanResult) {
-	parts := generatePathComponents(p.GetPathInBackup(""))
-
-	for _, part := range parts {
-		results <- importer.NewScanRecord(
-			part,
-			"",
-			objects.NewFileInfo(
-				stdpath.Base(part),
-				0,
-				0700|os.ModeDir,
-				time.Unix(0, 0).UTC(),
-				0,
-				0,
-				0,
-				0,
-				0,
-			),
-			nil,
-			func() (io.ReadCloser, error) {
-				return nil, nil
-			},
-		)
-	}
 }
 
 // generatePathComponents is a helper function that returns a slice of strings
@@ -177,15 +162,12 @@ func generatePathComponents(path string) []string {
 	return components
 }
 
-func (p *RcloneImporter) scanRecursive(results chan *importer.ScanResult, path string, wg *sync.WaitGroup) {
-	results, response, err := p.ListFolder(results, path)
-	if err {
-		return
-	}
+func (p *RcloneImporter) scanRecursive(results chan<- *connectors.Record, path string, wg *sync.WaitGroup) {
+	response, _ := p.ListFolder(results, path)
 	p.scanFolder(results, path, response, wg)
 }
 
-func (p *RcloneImporter) ListFolder(results chan *importer.ScanResult, path string) (chan *importer.ScanResult, Response, bool) {
+func (p *RcloneImporter) ListFolder(results chan<- *connectors.Record, path string) (Response, error) {
 	payload := map[string]interface{}{
 		"fs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
 		"remote": path,
@@ -193,26 +175,27 @@ func (p *RcloneImporter) ListFolder(results chan *importer.ScanResult, path stri
 
 	jsonPayload, err := json.Marshal(payload)
 	if err != nil {
-		results <- importer.NewScanError(p.GetPathInBackup(path), err)
-		return nil, Response{}, true
+		results <- connectors.NewError(p.GetPathInBackup(path), err)
+		return Response{}, err
 	}
 
 	output, status := librclone.RPC("operations/list", string(jsonPayload))
 	if status != http.StatusOK {
-		results <- importer.NewScanError(p.GetPathInBackup(path), fmt.Errorf("failed to list directory: %s", output))
-		return nil, Response{}, true
+		results <- connectors.NewError(p.GetPathInBackup(path), fmt.Errorf("failed to list directory: %s", output))
+		return Response{}, err
 	}
 
 	var response Response
 	err = json.Unmarshal([]byte(output), &response)
 	if err != nil {
-		results <- importer.NewScanError(p.GetPathInBackup(path), err)
-		return nil, Response{}, true
+		results <- connectors.NewError(p.GetPathInBackup(path), err)
+		return Response{}, err
 	}
-	return results, response, false
+
+	return response, nil
 }
 
-func (p *RcloneImporter) scanFolder(results chan *importer.ScanResult, path string, response Response, wg *sync.WaitGroup) {
+func (p *RcloneImporter) scanFolder(results chan<- *connectors.Record, path string, response Response, wg *sync.WaitGroup) {
 	for _, file := range response.List {
 		wg.Add(1)
 		go func() {
@@ -237,44 +220,30 @@ func (p *RcloneImporter) scanFolder(results chan *importer.ScanResult, path stri
 					p.scanRecursive(results, file.Path, wg)
 				}()
 
-				results <- importer.NewScanRecord(
+				results <- connectors.NewRecord(
 					p.GetPathInBackup(file.Path),
 					"",
-					objects.NewFileInfo(
-						stdpath.Base(file.Name),
-						0,
-						0700|os.ModeDir,
-						parsedTime,
-						0,
-						0,
-						0,
-						0,
-						0,
-					),
+					objects.FileInfo{
+						Lname:    stdpath.Base(file.Name),
+						Lmode:    0700 | os.ModeDir,
+						LmodTime: parsedTime,
+					},
 					nil,
 					func() (io.ReadCloser, error) {
 						return nil, nil
 					},
 				)
 			} else {
-				filesize := file.Size
-
-				fi := objects.NewFileInfo(
-					stdpath.Base(file.Path),
-					filesize,
-					0600,
-					parsedTime,
-					1,
-					0,
-					0,
-					0,
-					0,
-				)
-
-				results <- importer.NewScanRecord(
+				results <- connectors.NewRecord(
 					p.GetPathInBackup(file.Path),
 					"",
-					fi,
+					objects.FileInfo{
+						Lname:    stdpath.Base(file.Path),
+						Lsize:    file.Size,
+						Lmode:    0600,
+						LmodTime: parsedTime,
+						Ldev:     1,
+					},
 					nil,
 					func() (io.ReadCloser, error) {
 						return p.NewReader(file.Path)
@@ -319,7 +288,7 @@ type AutoremoveTmpFile struct {
 }
 
 func (file *AutoremoveTmpFile) Close() error {
-	defer os.Remove(file.Name())
+	//defer os.Remove(file.Name())
 	return file.File.Close()
 }
 
@@ -331,6 +300,8 @@ func (p *RcloneImporter) NewReader(pathname string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	fmt.Fprintf(p.logFile, "downloading and processing %s %s to %s\n", pathname, relativePath, name)
 
 	payload := map[string]string{
 		"srcFs":     fmt.Sprintf("%s:%s", p.Typee, p.Base),
@@ -360,19 +331,8 @@ func (p *RcloneImporter) NewReader(pathname string) (io.ReadCloser, error) {
 }
 
 func (p *RcloneImporter) Close(ctx context.Context) error {
+	p.logFile.Close()
 	utils.DeleteTempConf(p.confFile.Name())
 	librclone.Finalize()
 	return nil
-}
-
-func (p *RcloneImporter) Root(ctx context.Context) (string, error) {
-	return p.GetPathInBackup(""), nil
-}
-
-func (p *RcloneImporter) Origin(ctx context.Context) (string, error) {
-	return p.Typee, nil
-}
-
-func (p *RcloneImporter) Type(ctx context.Context) (string, error) {
-	return p.Typee, nil
 }

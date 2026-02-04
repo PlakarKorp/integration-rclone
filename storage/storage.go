@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,8 +14,10 @@ import (
 	"strings"
 
 	"github.com/PlakarKorp/integration-rclone/utils"
+	"github.com/PlakarKorp/kloset/connectors/storage"
+	"github.com/PlakarKorp/kloset/location"
 	"github.com/PlakarKorp/kloset/objects"
-	"github.com/PlakarKorp/kloset/storage"
+
 	_ "github.com/rclone/rclone/backend/all" // import all backends
 	"github.com/rclone/rclone/librclone/librclone"
 )
@@ -144,7 +147,7 @@ func (r *RcloneStorage) getFile(pathname string) (io.ReadSeekCloser, error) {
 		return nil, err
 	}
 
-	return &utils.AutoremoveTmpFile{tmpFile}, nil
+	return &utils.AutoremoveTmpFile{File: tmpFile}, nil
 }
 
 func (r *RcloneStorage) deleteFile(pathname string) error {
@@ -245,8 +248,25 @@ func (r *RcloneStorage) Open(ctx context.Context) ([]byte, error) {
 	return configData, nil
 }
 
-func (r *RcloneStorage) Location(ctx context.Context) (string, error) {
-	return r.location + "+" + r.Typee + "://" + r.Base, nil
+func (r *RcloneStorage) Ping(ctx context.Context) error {
+	// Not sure what sensible thing to do.
+	return nil
+}
+
+func (r *RcloneStorage) Origin() string {
+	return r.Base
+}
+
+func (r *RcloneStorage) Type() string {
+	return r.Typee
+}
+
+func (r *RcloneStorage) Root() string {
+	return "/" // Doesn't support nested access?
+}
+
+func (r *RcloneStorage) Flags() location.Flags {
+	return 0
 }
 
 func (r *RcloneStorage) Mode(ctx context.Context) (storage.Mode, error) {
@@ -254,7 +274,7 @@ func (r *RcloneStorage) Mode(ctx context.Context) (storage.Mode, error) {
 }
 
 func (r *RcloneStorage) Size(ctx context.Context) (int64, error) {
-	return -1, nil //TODO: Implement size calculation
+	return -1, nil
 }
 
 type Response struct {
@@ -288,32 +308,71 @@ func (r *RcloneStorage) getMacs(name string) ([]objects.MAC, error) {
 	return macs, nil
 }
 
-func (r *RcloneStorage) GetStates(ctx context.Context) ([]objects.MAC, error) {
-	return r.getMacs("states")
+func (r *RcloneStorage) List(ctx context.Context, res storage.StorageResource) ([]objects.MAC, error) {
+	//XXX: Simplify this when we have the stringer.
+	switch res {
+	case storage.StorageResourcePackfile:
+		return r.getMacs("packfiles")
+	case storage.StorageResourceState:
+		return r.getMacs("states")
+	case storage.StorageResourceLock:
+		return r.getMacs("locks")
+	}
+
+	return nil, errors.ErrUnsupported
 }
 
-func (r *RcloneStorage) PutState(ctx context.Context, mac objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("states/%064x", mac), rd)
+func (r *RcloneStorage) Put(ctx context.Context, res storage.StorageResource, mac objects.MAC, rd io.Reader) (int64, error) {
+	switch res {
+	case storage.StorageResourcePackfile:
+		return r.putFile(fmt.Sprintf("packfiles/%064x", mac), rd)
+	case storage.StorageResourceState:
+		return r.putFile(fmt.Sprintf("states/%064x", mac), rd)
+	case storage.StorageResourceLock:
+		return r.putFile(fmt.Sprintf("locks/%064x", mac), rd)
+	}
+
+	return -1, errors.ErrUnsupported
 }
 
-func (r *RcloneStorage) GetState(ctx context.Context, mac objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("states/%064x", mac))
+func (r *RcloneStorage) Get(ctx context.Context, res storage.StorageResource, mac objects.MAC, rg *storage.Range) (io.ReadCloser, error) {
+	switch res {
+	case storage.StorageResourcePackfile:
+		rd, err := r.getFile(fmt.Sprintf("packfiles/%064x", mac))
+		if err != nil {
+			return nil, err
+		}
+
+		if rg != nil {
+			_, err = rd.Seek(int64(rg.Offset), io.SeekStart)
+			if err != nil {
+				return nil, err
+			}
+
+			return limitReadCloser(rd, int64(rg.Length)), nil
+		}
+
+		return rd, nil
+	case storage.StorageResourceState:
+		return r.getFile(fmt.Sprintf("states/%064x", mac))
+	case storage.StorageResourceLock:
+		return r.getFile(fmt.Sprintf("locks/%064x", mac))
+	}
+
+	return nil, errors.ErrUnsupported
 }
 
-func (r *RcloneStorage) DeleteState(ctx context.Context, mac objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("states/%064x", mac))
-}
+func (r *RcloneStorage) Delete(ctx context.Context, res storage.StorageResource, mac objects.MAC) error {
+	switch res {
+	case storage.StorageResourcePackfile:
+		return r.deleteFile(fmt.Sprintf("packfiles/%064x", mac))
+	case storage.StorageResourceState:
+		return r.deleteFile(fmt.Sprintf("states/%064x", mac))
+	case storage.StorageResourceLock:
+		return r.deleteFile(fmt.Sprintf("locks/%064x", mac))
+	}
 
-func (r *RcloneStorage) GetPackfiles(ctx context.Context) ([]objects.MAC, error) {
-	return r.getMacs("packfiles")
-}
-
-func (r *RcloneStorage) PutPackfile(ctx context.Context, mac objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("packfiles/%064x", mac), rd)
-}
-
-func (r *RcloneStorage) GetPackfile(ctx context.Context, mac objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("packfiles/%064x", mac))
+	return nil
 }
 
 func limitReadCloser(r io.ReadCloser, n int64) io.ReadCloser {
@@ -323,40 +382,6 @@ func limitReadCloser(r io.ReadCloser, n int64) io.ReadCloser {
 type limitedReadCloser struct {
 	io.Reader
 	io.Closer
-}
-
-func (r *RcloneStorage) GetPackfileBlob(ctx context.Context, mac objects.MAC, offset uint64, length uint32) (io.ReadCloser, error) {
-	rd, err := r.getFile(fmt.Sprintf("packfiles/%064x", mac))
-	if err != nil {
-		return nil, err
-	}
-
-	_, err = rd.Seek(int64(offset), io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
-
-	return limitReadCloser(rd, int64(length)), nil
-}
-
-func (r *RcloneStorage) DeletePackfile(ctx context.Context, mac objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("packfiles/%064x", mac))
-}
-
-func (r *RcloneStorage) GetLocks(ctx context.Context) ([]objects.MAC, error) {
-	return r.getMacs("locks")
-}
-
-func (r *RcloneStorage) PutLock(ctx context.Context, lockID objects.MAC, rd io.Reader) (int64, error) {
-	return r.putFile(fmt.Sprintf("locks/%064x", lockID), rd)
-}
-
-func (r *RcloneStorage) GetLock(ctx context.Context, lockID objects.MAC) (io.ReadCloser, error) {
-	return r.getFile(fmt.Sprintf("locks/%064x", lockID))
-}
-
-func (r *RcloneStorage) DeleteLock(ctx context.Context, lockID objects.MAC) error {
-	return r.deleteFile(fmt.Sprintf("locks/%064x", lockID))
 }
 
 func (r *RcloneStorage) Close(ctx context.Context) error {
