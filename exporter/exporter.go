@@ -3,7 +3,6 @@ package exporter
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,27 +11,32 @@ import (
 	"strings"
 
 	"github.com/PlakarKorp/integration-rclone/utils"
-	"github.com/PlakarKorp/kloset/objects"
-	"github.com/PlakarKorp/kloset/snapshot/exporter"
+	"github.com/PlakarKorp/kloset/connectors"
+	"github.com/PlakarKorp/kloset/connectors/exporter"
+	"github.com/PlakarKorp/kloset/location"
 
 	_ "github.com/rclone/rclone/backend/all"
 	"github.com/rclone/rclone/librclone/librclone"
+
+	"golang.org/x/sync/errgroup"
 )
 
 type RcloneExporter struct {
 	Typee    string
 	Base     string
 	confFile *os.File
+
+	maxConcurrency int
 }
 
-func NewRcloneExporter(ctx context.Context, opts *exporter.Options, name string, config map[string]string) (exporter.Exporter, error) {
+func NewRcloneExporter(ctx context.Context, opts *connectors.Options, name string, config map[string]string) (exporter.Exporter, error) {
 	_, base, found := strings.Cut(config["location"], ":")
 	if !found {
 		return nil, fmt.Errorf("invalid location: %s. Expected format: location: <provider>://", config["location"])
 	}
 
 	utils.CleanPlakarRcloneConf(config)
-	
+
 	typee, found := config["type"]
 	if !found {
 		return nil, fmt.Errorf("missing type in configuration")
@@ -46,9 +50,10 @@ func NewRcloneExporter(ctx context.Context, opts *exporter.Options, name string,
 	librclone.Initialize()
 
 	return &RcloneExporter{
-		Typee:    typee,
-		Base:     base,
-		confFile: file,
+		Typee:          typee,
+		Base:           base,
+		confFile:       file,
+		maxConcurrency: opts.MaxConcurrency,
 	}, nil
 }
 
@@ -67,11 +72,73 @@ func (p *RcloneExporter) GetPathInBackup(path string) string {
 	return stdpath.Clean(path)
 }
 
-func (p *RcloneExporter) Root(ctx context.Context) (string, error) {
-	return p.GetPathInBackup(""), nil
+func (p *RcloneExporter) Root() string          { return p.GetPathInBackup("") }
+func (p *RcloneExporter) Origin() string        { return p.Typee } // WRONG
+func (p *RcloneExporter) Type() string          { return p.Typee }
+func (p *RcloneExporter) Flags() location.Flags { return 0 }
+
+func (p *RcloneExporter) Ping(ctx context.Context) error {
+	return nil
 }
 
-func (p *RcloneExporter) CreateDirectory(ctx context.Context, pathname string) error {
+func (p *RcloneExporter) Export(ctx context.Context, records <-chan *connectors.Record, results chan<- *connectors.Result) (ret error) {
+	defer close(results)
+	g, ctx := errgroup.WithContext(ctx)
+	g.SetLimit(p.maxConcurrency)
+
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			ret = ctx.Err()
+			break loop
+
+		case record, ok := <-records:
+			if !ok {
+				break loop
+			}
+
+			if record.Err != nil {
+				results <- record.Ok()
+				continue
+			}
+
+			if record.IsXattr || record.FileInfo.Lmode&os.ModeSymlink != 0 {
+				results <- record.Ok()
+				continue
+			}
+
+			pathname := stdpath.Join(p.Root(), record.Pathname)
+			if record.FileInfo.Lmode.IsDir() {
+				if err := p.mkdir(ctx, pathname); err != nil {
+					results <- record.Error(err)
+				} else {
+					results <- record.Ok()
+				}
+
+				continue
+			}
+
+			g.Go(func() error {
+				if err := p.storeFile(ctx, pathname, record); err != nil {
+					results <- record.Error(err)
+				} else {
+					results <- record.Ok()
+				}
+				return nil
+			})
+
+		}
+	}
+
+	if err := g.Wait(); err != nil && ret == nil {
+		ret = err
+	}
+
+	return ret
+}
+
+func (p *RcloneExporter) mkdir(ctx context.Context, pathname string) error {
 	if p.Typee == "googlephotos" {
 		return nil
 	}
@@ -101,7 +168,7 @@ func (p *RcloneExporter) CreateDirectory(ctx context.Context, pathname string) e
 // second file, it is possible that Google Drive doesn't see the root directory
 // yet, and creates a new one. This results in a duplicated root directory, with
 // some files in the first directory and the rest in the second.
-func (p *RcloneExporter) StoreFile(ctx context.Context, pathname string, fp io.Reader, size int64) error {
+func (p *RcloneExporter) storeFile(ctx context.Context, pathname string, record *connectors.Record) error {
 	tmpFile, err := os.CreateTemp("", "tempfile-*.tmp")
 	if err != nil {
 		return err
@@ -109,7 +176,7 @@ func (p *RcloneExporter) StoreFile(ctx context.Context, pathname string, fp io.R
 	defer tmpFile.Close()
 	defer os.Remove(tmpFile.Name())
 
-	_, err = io.Copy(tmpFile, fp)
+	_, err = io.Copy(tmpFile, record.Reader)
 	if err != nil {
 		return err
 	}
@@ -152,14 +219,6 @@ func (p *RcloneExporter) StoreFile(ctx context.Context, pathname string, fp io.R
 	}
 
 	return nil
-}
-
-func (p *RcloneExporter) SetPermissions(ctx context.Context, pathname string, fileinfo *objects.FileInfo) error {
-	return nil
-}
-
-func (p *RcloneExporter) CreateLink(ctx context.Context, oldname string, newname string, ltype exporter.LinkType) error {
-	return errors.ErrUnsupported
 }
 
 func (p *RcloneExporter) Close(ctx context.Context) error {
